@@ -14,7 +14,7 @@ const MODELS_PATHS = new Set(["/v1/models", "/models"]);
 const HEALTH_PATHS = new Set(["/", "/health"]);
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const cors = corsHeaders(request, env);
 
@@ -27,15 +27,48 @@ export default {
       return jsonResponse({ ok: true, upstream: "cloudflare-workers-ai" }, cors);
     }
 
+    // Debug routes to inspect logs in D1
+    if (url.pathname === "/debug/logs" && request.method === "GET") {
+      const auth = await authorize(request, env);
+      if (!auth.ok) return errorResponse(auth.status, auth.type, auth.message, cors);
+      if (!env.DB) return jsonResponse({ error: "DB binding not configured" }, cors);
+      const rows = await env.DB.prepare("SELECT * FROM logs ORDER BY id DESC LIMIT 50").all();
+      return jsonResponse({ logs: rows.results }, cors);
+    }
+
+    if (url.pathname === "/debug/clear" && request.method === "POST") {
+      const auth = await authorize(request, env);
+      if (!auth.ok) return errorResponse(auth.status, auth.type, auth.message, cors);
+      if (!env.DB) return jsonResponse({ error: "DB binding not configured" }, cors);
+      await env.DB.prepare("DELETE FROM logs").run();
+      return jsonResponse({ ok: true, cleared: true }, cors);
+    }
+
     const isKnownRoute =
       (request.method === "POST" && (MESSAGES_PATHS.has(url.pathname) || COUNT_TOKENS_PATHS.has(url.pathname))) ||
       (request.method === "GET" && MODELS_PATHS.has(url.pathname));
     if (!isKnownRoute) {
+      ctx?.waitUntil?.(
+        logToD1(env, {
+          path: url.pathname,
+          method: request.method,
+          status: 404,
+          error: `unknown route: ${request.method} ${url.pathname}`,
+        }),
+      );
       return errorResponse(404, "not_found_error", `unknown route: ${request.method} ${url.pathname}`, cors);
     }
 
     const auth = await authorize(request, env);
     if (!auth.ok) {
+      ctx?.waitUntil?.(
+        logToD1(env, {
+          path: url.pathname,
+          method: request.method,
+          status: auth.status,
+          error: auth.message,
+        }),
+      );
       return errorResponse(auth.status, auth.type, auth.message, cors);
     }
 
@@ -43,18 +76,64 @@ export default {
       return jsonResponse(modelCatalog(env), cors);
     }
     if (COUNT_TOKENS_PATHS.has(url.pathname)) {
-      return handleCountTokens(request, env, cors);
+      return handleCountTokens(request, env, cors, ctx);
     }
-    return handleMessages(request, env, cors);
+    return handleMessages(request, env, cors, ctx);
   },
 };
 
-async function handleMessages(request, env, cors) {
+async function logToD1(env, entry) {
+  if (!env.DB || typeof env.DB.prepare !== "function") return;
+  try {
+    const timestamp = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO logs (timestamp, path, method, status, model, streaming, request_body, upstream_raw, response_body, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        timestamp,
+        entry.path ?? "",
+        entry.method ?? "",
+        entry.status ?? 200,
+        entry.model ?? "",
+        entry.streaming ? 1 : 0,
+        typeof entry.request_body === "string" ? entry.request_body : JSON.stringify(entry.request_body ?? null),
+        typeof entry.upstream_raw === "string" ? entry.upstream_raw : JSON.stringify(entry.upstream_raw ?? null),
+        typeof entry.response_body === "string" ? entry.response_body : JSON.stringify(entry.response_body ?? null),
+        entry.error ?? null,
+      )
+      .run();
+  } catch (err) {
+    console.error("Failed to write log to D1:", err);
+  }
+}
+
+async function handleMessages(request, env, cors, ctx) {
   const prepared = await prepareRequest(request, env, cors);
-  if (prepared.response) return prepared.response;
+  if (prepared.response) {
+    ctx?.waitUntil?.(
+      logToD1(env, {
+        path: "/v1/messages",
+        method: "POST",
+        status: prepared.response.status,
+        error: "invalid request payload",
+      }),
+    );
+    return prepared.response;
+  }
   const { body, targetModel, workersAiPayload } = prepared;
 
   if (!env.AI || typeof env.AI.run !== "function") {
+    ctx?.waitUntil?.(
+      logToD1(env, {
+        path: "/v1/messages",
+        method: "POST",
+        status: 500,
+        model: body.model,
+        request_body: body,
+        error: "env.AI Workers AI binding is not configured",
+      }),
+    );
     return errorResponse(500, "api_error", "env.AI Workers AI binding is not configured", cors);
   }
 
@@ -88,6 +167,17 @@ async function handleMessages(request, env, cors) {
 
     if (streaming) {
       const upstreamStream = aiResult instanceof Response ? aiResult.body : aiResult;
+      ctx?.waitUntil?.(
+        logToD1(env, {
+          path: "/v1/messages",
+          method: "POST",
+          status: 200,
+          model: body.model,
+          streaming: true,
+          request_body: body,
+          upstream_raw: { targetModel, gatewayId },
+        }),
+      );
       const stream = translateStream(upstreamStream, {
         model: body.model,
         stopSequences: Array.isArray(body.stop_sequences) ? body.stop_sequences.filter((s) => typeof s === "string" && s) : [],
@@ -101,13 +191,37 @@ async function handleMessages(request, env, cors) {
 
     const rawResult = aiResult instanceof Response ? await aiResult.json() : aiResult;
     const responsePayload = toAnthropicResponse(rawResult, body.model, body.stop_sequences);
+    ctx?.waitUntil?.(
+      logToD1(env, {
+        path: "/v1/messages",
+        method: "POST",
+        status: 200,
+        model: body.model,
+        streaming: false,
+        request_body: body,
+        upstream_raw: rawResult,
+        response_body: responsePayload,
+      }),
+    );
     return jsonResponse(responsePayload, cors);
   } catch (err) {
     clearTimer();
-    if (controller.signal.aborted) {
-      return errorResponse(504, "api_error", `Workers AI did not respond within ${timeoutMs}ms`, cors);
-    }
-    return errorResponse(502, "api_error", `failed to run Workers AI model: ${err?.message ?? err}`, cors);
+    const errMsg = controller.signal.aborted
+      ? `Workers AI did not respond within ${timeoutMs}ms`
+      : `failed to run Workers AI model: ${err?.message ?? err}`;
+    const status = controller.signal.aborted ? 504 : 502;
+    ctx?.waitUntil?.(
+      logToD1(env, {
+        path: "/v1/messages",
+        method: "POST",
+        status,
+        model: body?.model,
+        streaming,
+        request_body: body,
+        error: errMsg,
+      }),
+    );
+    return errorResponse(status, "api_error", errMsg, cors);
   }
 }
 

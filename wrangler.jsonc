@@ -6,6 +6,13 @@
   "ai": {
     "binding": "AI"
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "proxy_logs",
+      "database_id": "40eadf6c-f627-4a63-9596-e027e2f9a967"
+    }
+  ],
   "vars": {
     "MODEL_ID": "@cf/zai-org/glm-5.3-flash",
     // Comma-separated browser origins allowed to call the proxy. Empty means no
