@@ -51,25 +51,32 @@ export function toWorkersAiMessages(messages, system) {
 
   for (const message of messages) {
     const role = message?.role === "assistant" ? "assistant" : "user";
-    const content = toMessageContent(message?.content, toolUseNames);
-    if (!content || (typeof content === "string" && !content.trim())) continue;
+    const { text, toolCalls } = parseMessageBlocks(message?.content, toolUseNames, role);
+
+    const msgObj = { role, content: text };
+    if (toolCalls && toolCalls.length > 0) {
+      msgObj.tool_calls = toolCalls;
+    }
+
+    if (!msgObj.content && (!msgObj.tool_calls || msgObj.tool_calls.length === 0)) continue;
 
     const last = result[result.length - 1];
-    if (last && last.role === role) {
-      last.content += `\n\n${content}`;
+    if (last && last.role === role && !last.tool_calls && !msgObj.tool_calls) {
+      last.content += `\n\n${msgObj.content}`;
     } else {
-      result.push({ role, content });
+      result.push(msgObj);
     }
   }
 
   return result;
 }
 
-function toMessageContent(content, toolUseNames) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
+function parseMessageBlocks(content, toolUseNames, role) {
+  if (typeof content === "string") return { text: content, toolCalls: [] };
+  if (!Array.isArray(content)) return { text: "", toolCalls: [] };
 
   let combinedText = "";
+  const toolCalls = [];
 
   for (const block of content) {
     if (typeof block === "string") {
@@ -100,7 +107,14 @@ function toMessageContent(content, toolUseNames) {
       case "tool_use": {
         if (block.id && block.name) toolUseNames.set(block.id, block.name);
         const { cleanId } = unpackToolUseId(block.id);
-        combinedText += `${combinedText ? "\n" : ""}[Tool Call: ${block.name}(${JSON.stringify(block.input ?? {})})]`;
+        toolCalls.push({
+          id: cleanId || block.id,
+          type: "function",
+          function: {
+            name: block.name,
+            arguments: JSON.stringify(block.input ?? {}),
+          },
+        });
         break;
       }
       case "tool_result": {
@@ -128,7 +142,7 @@ function toMessageContent(content, toolUseNames) {
     }
   }
 
-  return combinedText;
+  return { text: combinedText, toolCalls };
 }
 
 function positiveInteger(value) {

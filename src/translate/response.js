@@ -100,17 +100,65 @@ export function extractToolCalls(data) {
   return toolCalls;
 }
 
+const TEXT_TOOL_CALL_REGEX = /\[Tool Call:\s*([a-zA-Z0-9_-]+)\s*\(([\s\S]*?)\)\]/g;
+const XML_TOOL_CALL_REGEX = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
+
+export function parseTextToolCalls(text) {
+  if (typeof text !== "string" || !text) return { cleanText: text, toolCalls: [] };
+
+  let cleanText = text;
+  const toolCalls = [];
+
+  cleanText = cleanText.replaceAll(TEXT_TOOL_CALL_REGEX, (match, name, rawArgs) => {
+    let args = {};
+    if (rawArgs?.trim()) {
+      try {
+        args = JSON.parse(rawArgs.trim());
+      } catch {
+        args = {};
+      }
+    }
+    toolCalls.push({
+      type: "tool_use",
+      id: newMessageId().replace("msg_", "toolu_"),
+      name: name.trim(),
+      input: args,
+    });
+    return "";
+  });
+
+  cleanText = cleanText.replaceAll(XML_TOOL_CALL_REGEX, (match, body) => {
+    try {
+      const parsed = JSON.parse(body.trim());
+      if (parsed?.name) {
+        toolCalls.push({
+          type: "tool_use",
+          id: newMessageId().replace("msg_", "toolu_"),
+          name: parsed.name,
+          input: parsed.arguments ?? parsed.parameters ?? parsed.input ?? {},
+        });
+        return "";
+      }
+    } catch {}
+    return match;
+  });
+
+  return { cleanText: cleanText.trim(), toolCalls };
+}
+
 export function toAnthropicResponse(workersAiResponse, requestedModel, stopSequences) {
   const reasoning = extractReasoningText(workersAiResponse);
-  const text = extractResponseText(workersAiResponse);
-  const toolCalls = extractToolCalls(workersAiResponse);
+  const rawText = extractResponseText(workersAiResponse);
+  const { cleanText, toolCalls: textToolCalls } = parseTextToolCalls(rawText);
+  const structuredToolCalls = extractToolCalls(workersAiResponse);
+  const toolCalls = [...structuredToolCalls, ...textToolCalls];
   const content = [];
 
   if (reasoning) {
     content.push({ type: "thinking", thinking: reasoning });
   }
-  if (text) {
-    content.push({ type: "text", text });
+  if (cleanText) {
+    content.push({ type: "text", text: cleanText });
   }
   for (const toolCall of toolCalls) {
     content.push(toolCall);
@@ -119,13 +167,14 @@ export function toAnthropicResponse(workersAiResponse, requestedModel, stopSeque
   let stopReason = toolCalls.length > 0 ? "tool_use" : "end_turn";
   let stopSequence = null;
 
-  if (stopReason === "end_turn" && Array.isArray(stopSequences) && text) {
+  if (stopReason === "end_turn" && Array.isArray(stopSequences) && cleanText) {
     for (const seq of stopSequences) {
-      if (typeof seq === "string" && seq && text.endsWith(seq)) {
+      if (typeof seq === "string" && seq && cleanText.endsWith(seq)) {
         stopSequence = seq;
         stopReason = "stop_sequence";
-        const trimmedText = text.slice(0, -seq.length);
-        if (content[0]) content[0].text = trimmedText;
+        const trimmedText = cleanText.slice(0, -seq.length);
+        const textBlock = content.find((b) => b.type === "text");
+        if (textBlock) textBlock.text = trimmedText;
         break;
       }
     }
