@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cloudflare-anthropic-proxy",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-01",
+  "ai": {
+    "binding": "AI"
+  },
+  "vars": {
+    "MODEL_ID": "@cf/zai-org/glm-5.3-flash",
+    // Comma-separated browser origins allowed to call the proxy. Empty means no
+    // CORS headers at all, which is correct for CLI/SDK clients.
+    "ALLOWED_ORIGINS": "",
+    // Optional comma-separated allow list of upstream Workers AI model ids. Empty
+    // means any syntactically valid model id the caller asks for.
+    // Optional Cloudflare AI Gateway ID for caching, rate limiting, and observability.
+    "GATEWAY_ID": "tests",
+    "MAX_REQUEST_BYTES": "52428800",
+    "UPSTREAM_TIMEOUT_MS": "300000"
+  },
+  // Secrets, set with `wrangler secret put` — never in this file:
+  //   PROXY_API_KEY   key callers must present; the worker refuses to serve without it
+  "observability": {
+    "enabled": true
+  }
+}
