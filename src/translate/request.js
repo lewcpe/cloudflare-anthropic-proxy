@@ -165,10 +165,7 @@ export function toTools(tools) {
       declaration.function.description = tool.description;
     }
     if (tool.input_schema && typeof tool.input_schema === "object") {
-      const parameters = sanitizeSchema(tool.input_schema);
-      if (!isEmptyObjectSchema(parameters)) {
-        declaration.function.parameters = parameters;
-      }
+      declaration.function.parameters = tool.input_schema;
     }
     declarations.push(declaration);
   }

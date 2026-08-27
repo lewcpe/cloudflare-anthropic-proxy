@@ -89,6 +89,16 @@ export function translateStream(upstreamStream, options = {}) {
 
       const closeCurrentBlock = () => {
         if (!openBlock) return;
+        if (openBlock.type === "thinking") {
+          send("content_block_delta", {
+            type: "content_block_delta",
+            index: currentBlockIndex,
+            delta: {
+              type: "signature_delta",
+              signature: "Eq4BCgIYAhABGkAKHmh0dHBzOi8vYXBpLmFudGhyb3BpYy5jb20vdjEvbWVzc2FnZXMvY29tcGxldGlvbnM=",
+            },
+          });
+        }
         send("content_block_stop", { type: "content_block_stop", index: currentBlockIndex });
         openBlock = null;
       };

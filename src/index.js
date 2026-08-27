@@ -86,6 +86,19 @@ async function logToD1(env, entry) {
   if (!env.DB || typeof env.DB.prepare !== "function") return;
   try {
     const timestamp = new Date().toISOString();
+    const reqStr =
+      typeof entry.request_body === "string"
+        ? entry.request_body.slice(0, 2000)
+        : JSON.stringify(entry.request_body ?? null).slice(0, 2000);
+    const upStr =
+      typeof entry.upstream_raw === "string"
+        ? entry.upstream_raw.slice(0, 1000)
+        : JSON.stringify(entry.upstream_raw ?? null).slice(0, 1000);
+    const resStr =
+      typeof entry.response_body === "string"
+        ? entry.response_body.slice(0, 2000)
+        : JSON.stringify(entry.response_body ?? null).slice(0, 2000);
+
     await env.DB.prepare(
       `INSERT INTO logs (timestamp, path, method, status, model, streaming, request_body, upstream_raw, response_body, error)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -97,9 +110,9 @@ async function logToD1(env, entry) {
         entry.status ?? 200,
         entry.model ?? "",
         entry.streaming ? 1 : 0,
-        typeof entry.request_body === "string" ? entry.request_body : JSON.stringify(entry.request_body ?? null),
-        typeof entry.upstream_raw === "string" ? entry.upstream_raw : JSON.stringify(entry.upstream_raw ?? null),
-        typeof entry.response_body === "string" ? entry.response_body : JSON.stringify(entry.response_body ?? null),
+        reqStr,
+        upStr,
+        resStr,
         entry.error ?? null,
       )
       .run();

@@ -146,6 +146,8 @@ export function parseTextToolCalls(text) {
   return { cleanText: cleanText.trim(), toolCalls };
 }
 
+const DUMMY_THINKING_SIGNATURE = "Eq4BCgIYAhABGkAKHmh0dHBzOi8vYXBpLmFudGhyb3BpYy5jb20vdjEvbWVzc2FnZXMvY29tcGxldGlvbnM=";
+
 export function toAnthropicResponse(workersAiResponse, requestedModel, stopSequences) {
   const reasoning = extractReasoningText(workersAiResponse);
   const rawText = extractResponseText(workersAiResponse);
@@ -155,7 +157,11 @@ export function toAnthropicResponse(workersAiResponse, requestedModel, stopSeque
   const content = [];
 
   if (reasoning) {
-    content.push({ type: "thinking", thinking: reasoning });
+    content.push({
+      type: "thinking",
+      thinking: reasoning,
+      signature: DUMMY_THINKING_SIGNATURE,
+    });
   }
   if (cleanText) {
     content.push({ type: "text", text: cleanText });
